@@ -17,7 +17,7 @@
 use File::Find;
 use File::Path "make_path";
 use File::Copy;
-use Switch;
+use feature 'switch';
 
 my %params = ( 	key_revision=>"04",
 				fw_version=>"0003004000000000",
@@ -50,14 +50,14 @@ sub process {
 		@file = ( $base =~ /.+\/(.+)\.(.+)/ );
 		$new_dir.="/$file[0].$file[1]";
 		# print "filename: $file[0]\nextension: $file[1]";
-		switch (lc($file[1])) {
-			case ("sfo") { 
+		given (lc($file[1])) {
+			when ("sfo") { 
 				print "Parsing SFO... "; if (!processSfo($base,$new_dir)) { next }
 			}
-			case (/(bin|self)/) {
+			when (/(bin|self)/) {
 				if (!processSelf($base,$new_dir)) { next }
 			}
-			case (/.*/) {
+			when (/.*/) {
 				copy($full,$new_dir);
 			}
 		}
