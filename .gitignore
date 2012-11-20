@@ -18,3 +18,6 @@ pm_to_blib
 *.exe
 *.log
 *.dll
+*.bin
+*.sfo
+*.sublime*

@@ -24,10 +24,12 @@ my %params = ( 	key_revision=>"04",
 				auth_id=>"1010000001000003",
 				vendor_id=>"01000002",
 				self_type=>"APP",
-				app_version=>"0001000000000000"	
+				app_version=>"0001000000000000",
+				compress_data=>"TRUE"
 			);
 
 $file = shift or die "no input specified";
+
 find({ wanted => \&process, no_chdir => 1 }, $file);
 sub process {
 	my ( $new_dir, $ext ) = undef;
@@ -52,12 +54,13 @@ sub process {
 		# print "filename: $file[0]\nextension: $file[1]";
 		given (lc($file[1])) {
 			when ("sfo") { 
-				print "Parsing SFO... "; if (!processSfo($base,$new_dir)) { next }
+				print "Parsing SFO... "; if (!processSfo($base,$new_dir)) { continue }
 			}
 			when (/(bin|self)/) {
-				if (!processSelf($base,$new_dir)) { next }
+				if (!processSelf($base,$new_dir)) { continue }
 			}
-			when (/.*/) {
+			default { 
+				print "* copying normal file ($file[0].$file[1])";
 				copy($full,$new_dir);
 			}
 		}
@@ -128,18 +131,34 @@ sub processSelf {
 	if ( !-e $tmp ) { 
 		make_path($tmp); 
 	}
-	my $log = " &>> scetool.log";
-	system("./scetool.exe -i \"$inFile\" > $tmp/$base.INFO");
-	$params{'computed_type'}=`grep -oP '^\\sHeader Type\\s*\\[\\K\\w+(?=\\])' $tmp/$base.INFO`; #we end up with trailing whitespace that needs to be stripped here
-	$params{'computed_type'} =~ s/^\s+|\s+$//g;
-	print $params{'computed_type'};
-	if ( !length($params{'computed_type'}) ) { print "false self"; return 0; }
+	my $log = ( $^O eq "MSWin32" ) ? " > scetool.log" : " &>> scetool.log";
+
+	if ( !-e "scetool.exe" ) {
+		die "error: scetool.exe not found\n";
+	} else {
+		use Cwd "abs_path";
+		$scetool = abs_path("scetool.exe");
+		print "scetool = $scetool";
+	}
+	system("$scetool -i \"$inFile\" > $tmp/$base.INFO");
+
+	$params{'computed_type'} = undef;
+	open INFO, "<", "$tmp/$base.INFO";
+	while ( defined( my $line = <INFO> ) ){
+	 	if ( $line =~ m/\sHeader Type\s+\[(\w+)\]/ ) {
+	 		chomp( $params{'computed_type'} = $1 );
+	 	}
+	}
+	close INFO;
+	if ( !defined($params{'computed_type'}) ) {
+		print "false self"; return 0; 
+	}
 
 	print "* decrypting SELF to $tmp";
-	system("./scetool.exe -d \"$inFile\" \"$tmp/$base.OUT\"" . $log);
+	system("$scetool -d \"$inFile\" \"$tmp/$base.OUT\"" . $log);
 
-	$boilerplate="./scetool.exe -v -s FALSE -0 $params{'computed_type'} -2 $params{'key_revision'} -3 $params{'auth_id'} -4 $params{'vendor_id'} -A $params{'app_version'} -6 $params{'fw_version'}";
-	system($boilerplate . " -5 $params{self_type} -e \"$tmp/$base.OUT\" \"$outFile\"" . $log);
+	$boilerplate="-v -s FALSE -0 $params{'computed_type'} -1 $params{'compress_data'} -2 $params{'key_revision'} -3 $params{'auth_id'} -4 $params{'vendor_id'} -A $params{'app_version'} -6 $params{'fw_version'}";
+	system("$scetool $boilerplate -5 $params{self_type} -e \"$tmp/$base.OUT\" \"$outFile\"" . $log);
 
 	return 1;
 }
