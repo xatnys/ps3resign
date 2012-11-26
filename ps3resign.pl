@@ -2,21 +2,14 @@
 
 # Copyright (C) 2012 xatnys <xatnys@gmail.com>
 #
-#    Licensed under the Apache License, Version 2.0 (the "License");
-#    you may not use this file except in compliance with the License.
-#    You may obtain a copy of the License at
-#
-#        http://www.apache.org/licenses/LICENSE-2.0
-#
-#    Unless required by applicable law or agreed to in writing, software
-#    distributed under the License is distributed on an "AS IS" BASIS,
-#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#    See the License for the specific language governing permissions and
-#    limitations under the License.
+# Licensed under the Apache License, Version 2.0: http://www.apache.org/licenses/LICENSE-2.0
+
 
 use File::Find;
 use File::Path "make_path";
 use File::Copy;
+use File::Basename;
+use Cwd "abs_path";
 use feature 'switch';
 
 my %params = ( 	key_revision=>"04",
@@ -25,8 +18,21 @@ my %params = ( 	key_revision=>"04",
 				vendor_id=>"01000002",
 				self_type=>"APP",
 				app_version=>"0001000000000000",
-				compress_data=>"TRUE"
+				compress_data=>"TRUE",
+				computed_type=>undef,
+				CID=>undef,
+				SFOversion=>"03.4000"
 			);
+my $scetool = undef;
+if ( !-e "scetool.exe" ) {
+	die "error: scetool.exe not found\n";
+} else {
+	$scetool = abs_path("scetool.exe");
+}
+
+if (scalar @ARGV > 1) { 
+	$params{CID}=shift;
+}
 
 $file = shift or die "no input specified";
 
@@ -54,13 +60,13 @@ sub process {
 		# print "filename: $file[0]\nextension: $file[1]";
 		given (lc($file[1])) {
 			when ("sfo") { 
-				print "Parsing SFO... "; if (!processSfo($base,$new_dir)) { continue }
+				if (!processSfo($base,$new_dir)) { continue }
 			}
 			when (/(bin|self)/) {
 				if (!processSelf($base,$new_dir)) { continue }
 			}
 			default { 
-				print "* copying normal file ($file[0].$file[1])";
+				print "   * copying normal file ($file[0].$file[1])";
 				copy($full,$new_dir);
 			}
 		}
@@ -81,9 +87,10 @@ sub processSfo {
 	close FILE;
 
 	if ( join("",@hex[0..3]) != "00505346" ) { 
-		print "Invalid SFO"; return 0;
+		print "   <> Invalid SFO"; return 0;
 	}
-
+	print "   * Parsing SFO... ";
+	
 	my $index_table_N = hexFromBytes(@hex[0x10..0x13]);
 	my $index_table_size = 0x10;
 	my $index_table_start = 0x14;
@@ -103,8 +110,8 @@ sub processSfo {
 					$dataOffset = $data_table_start+$dataAddr;
 					$dataLen = hexFromBytes(@hex[$curByte+4..$curByte+7]);
 					# print "found PS3_SYSTEM_VER @ $keyAddr | dataOffset: $dataOffset | value: " . join("",map chr(hex) , @hex[$dataOffset..$dataOffset+$dataLen-1]);
-					my @targ = (unpack "H*", "03.4000") =~ m/../g;
-					for (my $curByte2 = 0; $curByte2 < $dataLen; $curByte2++) {
+					my @targ = (unpack "H*", $params{SFOversion}) =~ m/../g;
+					for (my $curByte2 = 0; $curByte2 < $dataLen-1; $curByte2++) { #$dataLen = stringLen + 1 null byte
 						$hex[$dataOffset+$curByte2] = $targ[$curByte2];
 					}
 					# print "new value: " . join("", map(chr(hex($_)), @hex[$dataOffset..$dataOffset+$dataLen-1]));
@@ -112,7 +119,7 @@ sub processSfo {
 			}
 		}
 	}
-
+	
 	my @bytes = map pack('C', hex($_)), @hex;
 
 	open FILE, ">", $outFile;
@@ -120,45 +127,49 @@ sub processSfo {
 	syswrite FILE, join'',@bytes;
 	close FILE;
 
+	return 1;
 }
 
 sub processSelf {
-	use File::Basename;
 	my ( $inFile, $outFile ) = @_;
+	my $base=basename($inFile);
+	my $tmp="tmp/" . dirname($inFile);
+	my $log = ( $^O eq "MSWin32" ) ? " >> scetool.log" : " &>> scetool.log";
 
-	$base=basename($inFile);
-	$tmp="tmp/" . dirname($inFile);
 	if ( !-e $tmp ) { 
-		make_path($tmp); 
+		make_path("$tmp"); 
 	}
-	my $log = ( $^O eq "MSWin32" ) ? " > scetool.log" : " &>> scetool.log";
 
-	if ( !-e "scetool.exe" ) {
-		die "error: scetool.exe not found\n";
-	} else {
-		use Cwd "abs_path";
-		$scetool = abs_path("scetool.exe");
-		print "scetool = $scetool";
-	}
-	system("$scetool -i \"$inFile\" > $tmp/$base.INFO");
+	system("$scetool -i \"$inFile\" > \"$tmp/$base.INFO\"");
 
-	$params{'computed_type'} = undef;
-	open INFO, "<", "$tmp/$base.INFO";
+	open INFO, "<", "$tmp/$base.INFO" or die $!;
 	while ( defined( my $line = <INFO> ) ){
 	 	if ( $line =~ m/\sHeader Type\s+\[(\w+)\]/ ) {
-	 		chomp( $params{'computed_type'} = $1 );
+	 		chomp( $params{computed_type} = $1 );
+	 	}
+	 	if ( $line =~ m/\sSELF-Type\s\[(\w+)\s\w+\]/ ) {
+	 		$params{self_type} = "NPDRM";
+	 	}
+	 	if ( !defined($params{CID}) && $line =~ m/\sContentID\s+(\S+)/) {
+	 		chomp( $params{CID} = $1 );
 	 	}
 	}
 	close INFO;
-	if ( !defined($params{'computed_type'}) ) {
-		print "false self"; return 0; 
+
+	if ( !defined($params{computed_type}) ) {
+		return 0; 
+	} else {
+		print "   * decrypting $params{computed_type} to $tmp";
+		system("$scetool -d \"$inFile\" \"$tmp/$base.OUT\"" . $log);
 	}
 
-	print "* decrypting SELF to $tmp";
-	system("$scetool -d \"$inFile\" \"$tmp/$base.OUT\"" . $log);
+	my $bp="-v -s FALSE -0 $params{computed_type} -1 $params{compress_data} -2 $params{key_revision} -3 $params{auth_id} -4 $params{vendor_id} -A $params{app_version} -6 $params{fw_version} -5 $params{self_type} ";
+	if ($params{self_type} eq "NPDRM") {
+		print "   * NPDRM cid: $params{CID}";
+		$bp.="-b FREE -c EXEC -f $params{CID} -g $base";
+	}
 
-	$boilerplate="-v -s FALSE -0 $params{'computed_type'} -1 $params{'compress_data'} -2 $params{'key_revision'} -3 $params{'auth_id'} -4 $params{'vendor_id'} -A $params{'app_version'} -6 $params{'fw_version'}";
-	system("$scetool $boilerplate -5 $params{self_type} -e \"$tmp/$base.OUT\" \"$outFile\"" . $log);
+	system("$scetool $bp -e \"$tmp/$base.OUT\" \"$outFile\"" . $log);
 
 	return 1;
 }
