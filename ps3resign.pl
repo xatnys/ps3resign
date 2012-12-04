@@ -122,12 +122,25 @@ sub processPkg {
 	$digest = $sha1->digest;
 
 	$data[$byte] = unpack(sprintf('@%da',$pkgHead{dataOffset}), $file) ^ unpack(sprintf('@%da',$byte & 0xf),$digest);
+
+	my $x = int($pkgHead{dataSize}/16)+1;
+
+	@dbytes = ((0x00) x $pkgHead{dataSize});
+	print length @dbytes;
+	while ($x) {
+		$sha1->add($packedKey . pack("x24(H16)", sprintf("%016x",++$byte)));
+		for (my $i = 0; $i < 16; $i++) {
+			$dbytes[$i+$byte] = $sha1->clone->digest;
+		}
+		$sha1->reset;
+		$x--;
+	}
+	my $xor;
+	print length @dbytes;
 	for (my $idx = 1; $idx < $pkgHead{dataSize}; $idx++) {
-			if ($idx % 16 == 0) {
-				$sha1->add($packedKey . pack("x24(H16)", sprintf("%016x",++$byte)));
-				$digest = $sha1->digest;
-			}
-			$data[$idx] = unpack(sprintf('@%da',$pkgHead{dataOffset}+$idx), $file) ^ unpack(sprintf('@%da',$idx & 0xf),$digest);
+		# print $idx;
+		$xor=unpack(sprintf('@%da',$idx & 0xf),$dbytes[$idx]);
+		$data[$idx] = unpack(sprintf('@%da',$pkgHead{dataOffset}+$idx), $file) ^ $xor;
 	}
 
 	$decrypted = join '', @data;
