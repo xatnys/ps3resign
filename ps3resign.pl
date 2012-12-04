@@ -89,57 +89,73 @@ sub hexFromBytesBE {
 }
 
 sub processPkg {
-	( my $file ) = @_;
-	my $e_path = $file =~ s/.+[\\\/](.+)\..+/extract\/$1\//r;
-	
-	open FILE, "< :raw", $file or print $! and return 0; # always open non-text files as raw/binary!!
-	my @hex =  unpack "(H2)*", join ("",<FILE>) ;
-	close FILE;
-	if ( !@hex || join("",@hex[0..3]) ne "7f504b47" ) { return 0; }
+	( my $inFile ) = @_;
+	my $e_path = $inFile =~ s/.+[\\\/](.+)\..+/extract\/$1\//r; #/
 
-	if ( !-e "extract/") { make_path "extract"; }
+	open FILE, "< :raw", $inFile;
+	$file = join '', <FILE>;
+	close FILE;
+
+	my %pkgHead; (	$pkgHead{magic}, 
+					$pkgHead{pkg_type}, 
+					$pkgHead{numItems}, 
+					$pkgHead{dataOffset}, 
+					$pkgHead{dataSize}, 
+					$pkgHead{keyA},
+					$pkgHead{keyB} 
+					) = unpack('H8L>@20L>@32(H16)(H16)@96(a8)(a8)',$file);
+
+	$pkgHead{dataSize} = hex($pkgHead{dataSize});
+	$pkgHead{dataOffset} = hex($pkgHead{dataOffset});
+	@data = (0x00) x $pkgHead{dataSize};
+
+	if ($pkgHead{magic} ne "7f504b47") { return 0; }
+
+	if ( !-e "extract/" ) { make_path "extract"; }
 	if ( !-e $e_path ) { make_path $e_path; }
 
-	my $dataOffset = hexFromBytes(@hex[0x20..0x27]);
-	my $dataSize = hexFromBytes(@hex[0x28..0x2F]);
-	my $numFiles = hexFromBytes(@hex[0x14..0x17]);
-	
-	my $cur = 0x00;
-	@key = ( @hex[0x60..0x67], @hex[0x60..0x67], @hex[0x68..0x6F], @hex[0x68..0x6F], (0x00) x 24 );
-	$packedKey = pack("(H2)*", @key);
-	$packedAddr = pack("(H2)*", sprintf("%16x",$cur) =~ m/../g);
-	$sha1->add($packedKey . $packedAddr);
-	my @digest = $sha1->hexdigest =~ m/../g;
-	
-	for (my $idx = 0; $idx < $dataSize ; $idx++) {
-		if ($idx != 0 && $idx % 16 == 0) {
-			$packedAddr = pack("(H2)*", sprintf("%16x",++$cur) =~ m/../g);
-			$sha1->add($packedKey . $packedAddr);
-			@digest = $sha1->hexdigest =~ m/../g;
-		}
-		$hex[$dataOffset+$idx] = unpack("(H2)*",pack("(H2)*",$hex[$dataOffset+$idx]) ^ pack("(H2)*",$digest[$idx & 0xf]));
+	my $sha1 = Digest::SHA1->new;
+	my $digest = undef;
+	my $byte=0x00;
+	$packedKey = $pkgHead{keyA} x 2 . $pkgHead{keyB} x 2;
+	$sha1->add($packedKey . pack("x24(H16)", sprintf("%016x",$byte)));
+	$digest = $sha1->digest;
+
+	$data[$byte] = unpack(sprintf('@%da',$pkgHead{dataOffset}), $file) ^ unpack(sprintf('@%da',$byte & 0xf),$digest);
+	for (my $idx = 1; $idx < $pkgHead{dataSize}; $idx++) {
+			if ($idx % 16 == 0) {
+				$sha1->add($packedKey . pack("x24(H16)", sprintf("%016x",++$byte)));
+				$digest = $sha1->digest;
+			}
+			$data[$idx] = unpack(sprintf('@%da',$pkgHead{dataOffset}+$idx), $file) ^ unpack(sprintf('@%da',$idx & 0xf),$digest);
 	}
 
-	for (my $idx = 0; $idx < $numFiles; $idx++) { 
-		my $dOff = $dataOffset+32*$idx;
-		$fNameOff = $dataOffset + hexFromBytes(@hex[$dOff..$dOff+3]);
-		$fNameLen = hexFromBytes(@hex[$dOff+4..$dOff+7]) - 1;
-		$fDataOff = $dataOffset + hexFromBytes(@hex[$dOff+8..$dOff+15]);
-		$fDataSize = hexFromBytes(@hex[$dOff+16..$dOff+23]) -1;
-		$flags = join "",@hex[$dOff+24..$dOff+27];
-		$fName = unpack("U0a*",pack("(H2)*", @hex[$fNameOff..$fNameOff+$fNameLen])) =~ s/\000//r; # strip trailing null
-		given($flags & 0xff) {
+	$decrypted = join '', @data;
+	for (my $idx = 0; $idx < $pkgHead{numItems}; $idx++) {
+		my %fileEnt; ( 	$fileEnt{nameOffset}, 
+						$fileEnt{nameLen}, 
+						$fileEnt{dataOffset}, 
+						$fileEnt{dataSize}, 
+						$fileEnt{flags} ) = unpack(sprintf('@%dL>L>(H16)(H16)L>',$idx*32),$decrypted);
+
+		$fileEnt{name}=unpack(sprintf('@%dA%d',$fileEnt{nameOffset},$fileEnt{nameLen}),$decrypted);
+		$fileEnt{dataOffset} = hex $fileEnt{dataOffset};
+		$fileEnt{dataSize} = hex $fileEnt{dataSize};
+
+		given($fileEnt{flags} & 0xff) {
 			when(3) {
-				open FILE, "> :raw", $e_path . $fName;
-				syswrite FILE, pack("(H2)*", @hex[$fDataOff..$fDataOff+$fDataSize]);
+				open FILE, "> :raw", $e_path . $fileEnt{name};
+				syswrite FILE, unpack(sprintf('@%da%d',$fileEnt{dataOffset},$fileEnt{dataSize}),$decrypted);
 				close FILE;
 			}
-			when(4) { make_path $e_path . $fName }
+			when(4) { make_path $e_path . $fileEnt{name} }
 			default { print "unknown!"; }
 		}
+	
 	}
 	return 1;
 }
+
 sub processSfo {
 	my ( $inFile, $outFile ) = @_;
 	if ( -e $inFile ) {
