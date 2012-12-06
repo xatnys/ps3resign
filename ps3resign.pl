@@ -118,9 +118,9 @@ sub processPkg {
 			@file[$pkgHead{dataOffset}+$x+$i] ^= $blu{substr($digest,$i*2,2)};
 		}
 	}
-	exit;
+	
 	$decrypted = pack("C*", @file);
-	saveRaw($decrypted);
+	# saveRaw($decrypted);
 	for (my $idx = 0; $idx < $pkgHead{numItems}; $idx++) {
 		my %fileEnt;
 		my @F_fields = qw( nameOffset nameLen dataOffset dataSize flags );
