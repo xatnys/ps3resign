@@ -13,7 +13,6 @@ use Cwd "abs_path";
 use feature 'switch';
 use Digest::SHA1;
 
-my $sha1=Digest::SHA1->new;
 my %params = ( 	key_revision=>"04",
 				fw_version=>"0003004000000000",
 				auth_id=>"1010000001000003",
@@ -93,67 +92,43 @@ sub processPkg {
 	my $e_path = $inFile =~ s/.+[\\\/](.+)\..+/extract\/$1\//r; #/
 
 	open FILE, "< :raw", $inFile;
-	$file = join '', <FILE>;
+	@file = unpack("C*",join '',<FILE>);
 	close FILE;
-
-	my %pkgHead; (	$pkgHead{magic}, 
-					$pkgHead{pkg_type}, 
-					$pkgHead{numItems}, 
-					$pkgHead{dataOffset}, 
-					$pkgHead{dataSize}, 
-					$pkgHead{keyA},
-					$pkgHead{keyB} 
-					) = unpack('H8L>@20L>@32(H16)(H16)@96(a8)(a8)',$file);
-
+	
+	my %pkgHead;
+	my @H_fields = qw( magic pkg_type numItems dataOffset dataSize keyA keyB );
+	@pkgHead{ @H_fields } = unpack('H8L>@20L>@32(H16)(H16)@96(a8)(a8)', pack("C134",@file));
+	
 	$pkgHead{dataSize} = hex($pkgHead{dataSize});
 	$pkgHead{dataOffset} = hex($pkgHead{dataOffset});
-	@data = (0x00) x $pkgHead{dataSize};
 
 	if ($pkgHead{magic} ne "7f504b47") { return 0; }
 
-	if ( !-e "extract/" ) { make_path "extract"; }
 	if ( !-e $e_path ) { make_path $e_path; }
 
 	my $sha1 = Digest::SHA1->new;
-	my $digest = undef;
-	my $byte=0x00;
-	$packedKey = $pkgHead{keyA} x 2 . $pkgHead{keyB} x 2;
-	$sha1->add($packedKey . pack("x24(H16)", sprintf("%016x",$byte)));
-	$digest = $sha1->digest;
-
-	$data[$byte] = unpack(sprintf('@%da',$pkgHead{dataOffset}), $file) ^ unpack(sprintf('@%da',$byte & 0xf),$digest);
-
-	my $x = int($pkgHead{dataSize}/16)+1;
-
-	@dbytes = ((0x00) x $pkgHead{dataSize});
-	print length @dbytes;
-	while ($x) {
-		$sha1->add($packedKey . pack("x24(H16)", sprintf("%016x",++$byte)));
+	my $packedKey = $pkgHead{keyA} x 2 . $pkgHead{keyB} x 2;
+	my $byte=0;
+	my $digest;
+	my %blu = map {( sprintf('%02x',$_) => $_ )} (0..255);	
+	for (my $x = 0; $x < $pkgHead{dataSize}; $x+=16) {
+		$sha1->add($packedKey . pack("x24(H16)", sprintf("%016x",$byte++)));
+		$digest = $sha1->hexdigest;
 		for (my $i = 0; $i < 16; $i++) {
-			$dbytes[$i+$byte] = $sha1->clone->digest;
+			@file[$pkgHead{dataOffset}+$x+$i] ^= $blu{substr($digest,$i*2,2)};
 		}
-		$sha1->reset;
-		$x--;
 	}
-	my $xor;
-	print length @dbytes;
-	for (my $idx = 1; $idx < $pkgHead{dataSize}; $idx++) {
-		# print $idx;
-		$xor=unpack(sprintf('@%da',$idx & 0xf),$dbytes[$idx]);
-		$data[$idx] = unpack(sprintf('@%da',$pkgHead{dataOffset}+$idx), $file) ^ $xor;
-	}
-
-	$decrypted = join '', @data;
+	exit;
+	$decrypted = pack("C*", @file);
+	saveRaw($decrypted);
 	for (my $idx = 0; $idx < $pkgHead{numItems}; $idx++) {
-		my %fileEnt; ( 	$fileEnt{nameOffset}, 
-						$fileEnt{nameLen}, 
-						$fileEnt{dataOffset}, 
-						$fileEnt{dataSize}, 
-						$fileEnt{flags} ) = unpack(sprintf('@%dL>L>(H16)(H16)L>',$idx*32),$decrypted);
+		my %fileEnt;
+		my @F_fields = qw( nameOffset nameLen dataOffset dataSize flags );
+		@fileEnt{@F_fields} = unpack(sprintf('@%dL>L>(H16)(H16)L>',$idx*32 + $pkgHead{dataOffset}),$decrypted);
 
-		$fileEnt{name}=unpack(sprintf('@%dA%d',$fileEnt{nameOffset},$fileEnt{nameLen}),$decrypted);
-		$fileEnt{dataOffset} = hex $fileEnt{dataOffset};
-		$fileEnt{dataSize} = hex $fileEnt{dataSize};
+		$fileEnt{name}=unpack(sprintf('@%dA%d',$fileEnt{nameOffset} + $pkgHead{dataOffset},$fileEnt{nameLen}),$decrypted);
+		$fileEnt{dataOffset} = hex($fileEnt{dataOffset}) + $pkgHead{dataOffset};
+		$fileEnt{dataSize} = hex$fileEnt{dataSize};
 
 		given($fileEnt{flags} & 0xff) {
 			when(3) {
@@ -167,6 +142,12 @@ sub processPkg {
 	
 	}
 	return 1;
+	sub saveRaw {
+		open OUTPUT, "> :raw", "data.raw";
+		syswrite OUTPUT, shift;
+		close OUTPUT;
+		exit;
+	}
 }
 
 sub processSfo {
