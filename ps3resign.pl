@@ -13,7 +13,7 @@ use Cwd "abs_path";
 use feature 'switch';
 use Digest::SHA1;
 
-my %params = ( 	key_revision=>"04",
+my %params = (	key_revision=>"04",
 				fw_version=>"0003004000000000",
 				auth_id=>"1010000001000003",
 				vendor_id=>"01000002",
@@ -96,8 +96,8 @@ sub processPkg {
 	close FILE;
 	
 	my %pkgHead;
-	my @H_fields = qw( magic pkg_type numItems dataOffset dataSize keyA keyB );
-	@pkgHead{ @H_fields } = unpack('H8L>@20L>@32(H16)(H16)@96(a8)(a8)', pack("C134",@file));
+	my @hfields = qw( magic pkg_type numItems dataOffset dataSize keyA keyB );
+	@pkgHead{ @hfields } = unpack('H8L>@20L>@32(H16)(H16)@96(a8)(a8)', pack("C134",@file));
 	
 	$pkgHead{dataSize} = hex($pkgHead{dataSize});
 	$pkgHead{dataOffset} = hex($pkgHead{dataOffset});
@@ -123,8 +123,8 @@ sub processPkg {
 	# saveRaw($decrypted);
 	for (my $idx = 0; $idx < $pkgHead{numItems}; $idx++) {
 		my %fileEnt;
-		my @F_fields = qw( nameOffset nameLen dataOffset dataSize flags );
-		@fileEnt{@F_fields} = unpack(sprintf('@%dL>L>(H16)(H16)L>',$idx*32 + $pkgHead{dataOffset}),$decrypted);
+		my @ffields = qw( nameOffset nameLen dataOffset dataSize flags );
+		@fileEnt{@ffields} = unpack(sprintf('@%dL>L>(H16)(H16)L>',$idx*32 + $pkgHead{dataOffset}),$decrypted);
 
 		$fileEnt{name}=unpack(sprintf('@%dA%d',$fileEnt{nameOffset} + $pkgHead{dataOffset},$fileEnt{nameLen}),$decrypted);
 		$fileEnt{dataOffset} = hex($fileEnt{dataOffset}) + $pkgHead{dataOffset};
@@ -152,52 +152,44 @@ sub processPkg {
 
 sub processSfo {
 	my ( $inFile, $outFile ) = @_;
-	if ( -e $inFile ) {
-		open FILE, "< :raw", $inFile or print $! and return 0;
-	} else {
-		print "No input file specified."; return 0;
-	}
-	my @hex = ( ( unpack "H*", join("",<FILE>) ) =~ m/../g  );
-	close FILE;
-
-	if ( join("",@hex[0..3]) != "00505346" ) { 
-		print "   <> Invalid SFO"; return 0;
-	}
-	print "   * Parsing SFO... ";
 	
-	my $index_table_N = hexFromBytesBE(@hex[0x10..0x13]);
-	my $index_table_size = 0x10;
-	my $index_table_start = 0x14;
-	my $key_table_start = hexFromBytesBE(@hex[0x08..0x0b]);
-	my $data_table_start = hexFromBytesBE(@hex[0x0c..0x0f]);
+	print "   * Parsing SFO... ";
+	open FILE, "< :raw", $inFile or print $! and return 0;
+	my @hex = unpack("C*", join '',<FILE>);
+	my $file = pack("C*", @hex);
+	close FILE;
+	
+	my %sfoHead;
+	my @hfields = qw( magic version keyTbl dataTbl numTblEnt );
+	@sfoHead{@hfields} = unpack("(H8)(H8)LLL", pack("C20", @hex)) or return 0;
 
-	for (my $curByte = $index_table_start; $curByte < $index_table_start + $index_table_N*$index_table_size; $curByte+=$index_table_size ) {
-		if ( $curByte + $index_table_start <= $index_table_start + $index_table_N*$index_table_size ) {
-			$keyWidth = hex($hex[$curByte + $index_table_size]) - hex($hex[$curByte]) - 1;
-			if ( $keyWidth == 14 ) { 
-				$keyOffset = hex($hex[$curByte+1] . $hex[$curByte]);
-				$keyAddr = $key_table_start+$keyOffset;
+	if ( $sfoHead{magic} != "00505346" ) { 
+		print "   <> Invalid SFO" and return 0;
+	}
 
-				if ( join("",map chr(hex($_)), @hex[$keyAddr..$keyAddr+$keyWidth-1]) eq "PS3_SYSTEM_VER") {
-
-					$dataAddr = hexFromBytesBE(@hex[$curByte+12..$curByte+15]);
-					$dataOffset = $data_table_start+$dataAddr;
-					$dataLen = hexFromBytesBE(@hex[$curByte+4..$curByte+7]);
-					# print "found PS3_SYSTEM_VER @ $keyAddr | dataOffset: $dataOffset | value: " . join("",map chr(hex) , @hex[$dataOffset..$dataOffset+$dataLen-1]);
-					my @targ = (unpack "H*", $params{SFOversion}) =~ m/../g;
-					for (my $curByte2 = 0; $curByte2 < $dataLen-1; $curByte2++) { #$dataLen = stringLen + 1 null byte
-						$hex[$dataOffset+$curByte2] = $targ[$curByte2];
-					}
-					# print "new value: " . join("", map(chr(hex($_)), @hex[$dataOffset..$dataOffset+$dataLen-1]));
-				}
+	my $keyLen;
+	my %iTblEnt;
+	my @ifields = qw( keyOff fmt len lenmax dataOff keyOffX );
+	for (my $i = 0; $i < $sfoHead{numTblEnt}; $i++) {
+		@iTblEnt{@ifields} = unpack(sprintf('@%dS(H4)LLLS',$i*16+20), $file);
+		if ($i == $sfoHead{numTblEnt}-1) { 
+			$keyLen = $sfoHead{dataTbl} - ($sfoHead{keyTbl} + $iTblEnt{keyOff});
+		} else {
+			$keyLen = $iTblEnt{keyOffX} - $iTblEnt{keyOff};
+		}
+		$iTblEnt{keyOff}+=$sfoHead{keyTbl};
+		$iTblEnt{dataOff}+=$sfoHead{dataTbl};
+		$iTblEnt{name} = unpack(sprintf("@%dA%d", $iTblEnt{keyOff}, $keyLen ), $file) =~ s/\000//r;
+		if ($iTblEnt{name} eq "PS3_SYSTEM_VER") {
+			my @targ = unpack("U0C*", $params{SFOversion});
+			for (my $x = 0; $x < $iTblEnt{len}-1; $x++) { #$dataLen = stringLen + 1 null byte
+				$hex[$iTblEnt{dataOff}+$x] = $targ[$x];
 			}
 		}
 	}
-	
-	my @bytes = map pack('C', hex($_)), @hex;
 
 	open FILE, "> :raw", $outFile;
-	syswrite FILE, join'',@bytes;
+	syswrite FILE, join'', pack('C*', @hex);
 	close FILE;
 
 	return 1;
