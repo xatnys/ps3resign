@@ -80,13 +80,6 @@ sub process {
 	}
 }
 
-sub hexFromBytes {
-	return hex join '', @_;
-}
-sub hexFromBytesBE {
-	return hex join '',reverse @_;
-}
-
 sub processPkg {
 	( my $inFile ) = @_;
 	my $e_path = $inFile =~ s/.+[\\\/](.+)\..+/extract\/$1\//r; #/
